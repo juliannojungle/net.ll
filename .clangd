@@ -1,0 +1,14 @@
+If:
+    PathMatch: .*
+
+CompileFlags:
+    Add: [
+        "-DDEBUGMSGS"
+    ]
+    Remove: [
+        "-mthumb", 
+        "-mcpu=*", 
+        "-mfpu=*", 
+        "-mfloat-abi=*"
+    ]
+    CompilationDatabase: build
