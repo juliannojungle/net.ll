@@ -39,8 +39,7 @@ elseif(PLATFORM_NAME STREQUAL "RP2040")
     set(CMAKE_CXX_STANDARD 14)
     set(PICO_TOOLCHAIN_PATH /usr/bin)
 
-    # The plain RP2040 has no radio, so a board carrying one is the only thing worth
-    # defaulting to here. Override PICO_BOARD for a board wiring the module elsewhere.
+    # Enable radio on RP2040.
     if(NOT DEFINED PICO_BOARD)
         set(PICO_BOARD pico_w)
     endif()
@@ -57,8 +56,6 @@ elseif(PLATFORM_NAME STREQUAL "RP2040")
     add_executable(${PROJECT_NAME} ${SOURCES})
     include_directories(${INCLUDE_DIRS})
 
-    # Directory scope on purpose: CYW43_LWIP has to reach the pico-sdk's own cyw43
-    # sources, not just ours, so a target-scoped definition would not be enough.
     add_compile_definitions(${PLATFORM_DEFINITIONS})
     target_link_libraries(${PROJECT_NAME} PUBLIC ${PLATFORM_LIBRARIES})
 
