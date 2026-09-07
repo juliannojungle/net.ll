@@ -34,8 +34,19 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+#define WIFI_ACCESS_POINT_CHANNEL 1
+#define WIFI_ACCESS_POINT_MAX_CONNECTIONS 4
+#define WIFI_ACCESS_POINT_NETMASK "255.255.255.0"
+#define WIFI_STATION_CONNECT_TIMEOUT_MILLISECONDS 15000
+#define WIFI_STATION_CONNECT_POLL_MILLISECONDS 100
 
 static bool wifiInitialized = false;
+static bool accessPointRunning = false;
+static esp_netif_t *stationNetif = NULL;
+static esp_netif_t *accessPointNetif = NULL;
 
 static WiFiAuthMode AuthModeFromEsp(wifi_auth_mode_t authMode) {
     switch (authMode) {
@@ -86,7 +97,9 @@ bool WiFiInitialize(void) {
         return false;
     }
 
-    esp_netif_create_default_wifi_sta();
+    if (stationNetif == NULL) {
+        stationNetif = esp_netif_create_default_wifi_sta();
+    }
 
     wifi_init_config_t initConfig = WIFI_INIT_CONFIG_DEFAULT();
     if (esp_wifi_init(&initConfig) != ESP_OK) {
@@ -111,6 +124,7 @@ void WiFiDeinitialize(void) {
 
     esp_wifi_stop();
     esp_wifi_deinit();
+    accessPointRunning = false;
     wifiInitialized = false;
 }
 
@@ -171,4 +185,174 @@ bool WiFiScan(WiFiNetwork networks[], uint16_t maxNetworks, uint16_t *foundNetwo
 
     free(records);
     return scanned;
+}
+
+static bool ConfigureAccessPointAddress(void) {
+    esp_netif_ip_info_t addressInfo;
+    memset(&addressInfo, 0, sizeof(addressInfo));
+    addressInfo.ip.addr = esp_ip4addr_aton(WIFI_ACCESS_POINT_ADDRESS);
+    addressInfo.gw.addr = addressInfo.ip.addr;
+    addressInfo.netmask.addr = esp_ip4addr_aton(WIFI_ACCESS_POINT_NETMASK);
+
+    /* The DHCP server latches the interface address when it starts, so it has to
+     * be down while the address changes -- otherwise the gateway handed to the
+     * phone stays ESP-IDF's 192.168.4.1 default. */
+    esp_netif_dhcps_stop(accessPointNetif);
+
+    if (esp_netif_set_ip_info(accessPointNetif, &addressInfo) != ESP_OK) {
+        printf("WiFi: could not set the access point address to %s\n", WIFI_ACCESS_POINT_ADDRESS);
+        esp_netif_dhcps_start(accessPointNetif);
+        return false;
+    }
+
+    if (esp_netif_dhcps_start(accessPointNetif) != ESP_OK) {
+        printf("WiFi: could not start the DHCP server\n");
+        return false;
+    }
+
+    return true;
+}
+
+bool WiFiAccessPointStart(const char *ssid, const char *password) {
+    if (ssid == NULL || ssid[0] == '\0') {
+        return false;
+    }
+
+    if (!wifiInitialized) {
+        printf("WiFi: WiFiInitialize must succeed before starting an access point\n");
+        return false;
+    }
+
+    if (accessPointRunning) {
+        return true;
+    }
+
+    if (accessPointNetif == NULL) {
+        accessPointNetif = esp_netif_create_default_wifi_ap();
+        if (accessPointNetif == NULL) {
+            printf("WiFi: esp_netif_create_default_wifi_ap failed\n");
+            return false;
+        }
+    }
+
+    bool open = (password == NULL || password[0] == '\0');
+
+    wifi_config_t config;
+    memset(&config, 0, sizeof(config));
+    snprintf((char *)config.ap.ssid, sizeof(config.ap.ssid), "%s", ssid);
+    config.ap.ssid_len = (uint8_t)strlen((const char *)config.ap.ssid);
+    config.ap.channel = WIFI_ACCESS_POINT_CHANNEL;
+    config.ap.max_connection = WIFI_ACCESS_POINT_MAX_CONNECTIONS;
+    config.ap.authmode = open ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
+
+    if (!open) {
+        snprintf((char *)config.ap.password, sizeof(config.ap.password), "%s", password);
+    }
+
+    if (esp_wifi_set_mode(WIFI_MODE_AP) != ESP_OK) {
+        printf("WiFi: could not switch the radio to access point mode\n");
+        return false;
+    }
+
+    if (esp_wifi_set_config(WIFI_IF_AP, &config) != ESP_OK) {
+        printf("WiFi: esp_wifi_set_config failed for the access point\n");
+        esp_wifi_set_mode(WIFI_MODE_STA);
+        return false;
+    }
+
+    /* Already started is not an error: WiFiInitialize starts the radio, and a
+     * mode change on a running driver is how ESP-IDF expects this to be done. */
+    esp_err_t result = esp_wifi_start();
+    if (result != ESP_OK && result != ESP_ERR_WIFI_CONN) {
+        printf("WiFi: could not start the access point\n");
+        esp_wifi_set_mode(WIFI_MODE_STA);
+        return false;
+    }
+
+    if (!ConfigureAccessPointAddress()) {
+        esp_wifi_set_mode(WIFI_MODE_STA);
+        return false;
+    }
+
+    accessPointRunning = true;
+    return true;
+}
+
+bool WiFiAccessPointStop(void) {
+    if (!accessPointRunning) {
+        return true;
+    }
+
+    if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) {
+        printf("WiFi: could not switch the radio back to station mode\n");
+        return false;
+    }
+
+    accessPointRunning = false;
+    return true;
+}
+
+bool WiFiAccessPointIsRunning(void) {
+    return accessPointRunning;
+}
+
+bool WiFiStationConnect(const char *ssid, const char *password) {
+    if (ssid == NULL || ssid[0] == '\0') {
+        return false;
+    }
+
+    if (!wifiInitialized) {
+        printf("WiFi: WiFiInitialize must succeed before connecting\n");
+        return false;
+    }
+
+    /* One radio, and it cannot hold both modes. */
+    if (accessPointRunning) {
+        printf("WiFi: cannot connect while the access point is running\n");
+        return false;
+    }
+
+    wifi_config_t config;
+    memset(&config, 0, sizeof(config));
+    snprintf((char *)config.sta.ssid, sizeof(config.sta.ssid), "%s", ssid);
+
+    if (password != NULL && password[0] != '\0') {
+        snprintf((char *)config.sta.password, sizeof(config.sta.password), "%s", password);
+    }
+
+    if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) {
+        printf("WiFi: could not switch the radio to station mode\n");
+        return false;
+    }
+
+    if (esp_wifi_set_config(WIFI_IF_STA, &config) != ESP_OK) {
+        printf("WiFi: esp_wifi_set_config failed for the station\n");
+        return false;
+    }
+
+    if (esp_wifi_connect() != ESP_OK) {
+        printf("WiFi: esp_wifi_connect failed\n");
+        return false;
+    }
+
+    /* Polled rather than event-driven so the call returns only once the outcome
+     * is known, without this library owning a thread to wait on. An address is
+     * what makes the link usable, so association alone is not enough. */
+    for (uint32_t waited = 0; waited < WIFI_STATION_CONNECT_TIMEOUT_MILLISECONDS;
+            waited += WIFI_STATION_CONNECT_POLL_MILLISECONDS) {
+        wifi_ap_record_t connectedTo;
+        esp_netif_ip_info_t addressInfo;
+
+        if (esp_wifi_sta_get_ap_info(&connectedTo) == ESP_OK
+                && esp_netif_get_ip_info(stationNetif, &addressInfo) == ESP_OK
+                && addressInfo.ip.addr != 0) {
+            return true;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(WIFI_STATION_CONNECT_POLL_MILLISECONDS));
+    }
+
+    printf("WiFi: could not connect to %s\n", ssid);
+    esp_wifi_disconnect();
+    return false;
 }

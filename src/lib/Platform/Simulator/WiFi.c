@@ -303,3 +303,32 @@ bool WiFiScan(WiFiNetwork networks[], uint16_t maxNetworks, uint16_t *foundNetwo
     /* An empty result is a success: a scan is not repeatable. */
     return true;
 }
+
+/* There is no radio here, so the access point is a successful no-op: it only
+ * records the state, which lets a consumer run the whole provisioning flow on
+ * the desktop while the HTTP server listens on the host's loopback. */
+static bool accessPointRunning = false;
+
+bool WiFiAccessPointStart(const char *ssid, const char *password) {
+    (void)password;
+    printf("WiFi: no radio on the Simulator, the access point \"%s\" is a no-op\n",
+           ssid != NULL ? ssid : "");
+    accessPointRunning = true;
+    return true;
+}
+
+bool WiFiAccessPointStop(void) {
+    accessPointRunning = false;
+    return true;
+}
+
+bool WiFiAccessPointIsRunning(void) {
+    return accessPointRunning;
+}
+
+bool WiFiStationConnect(const char *ssid, const char *password) {
+    (void)ssid;
+    (void)password;
+    printf("WiFi: connecting as a station is not implemented on the Simulator\n");
+    return false;
+}

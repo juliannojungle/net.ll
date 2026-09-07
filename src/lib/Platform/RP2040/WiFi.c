@@ -160,3 +160,25 @@ bool WiFiScan(WiFiNetwork networks[], uint16_t maxNetworks, uint16_t *foundNetwo
     /* An empty result is a success: a scan is not repeatable. */
     return true;
 }
+bool WiFiAccessPointStart(const char *ssid, const char *password) {
+    (void)ssid;
+    (void)password;
+    printf("WiFiAccessPointStart: not implemented on RP2040 yet (needs a radio and lwIP enabled)\n");
+    return false;
+}
+
+bool WiFiAccessPointStop(void) {
+    return true;
+}
+
+bool WiFiAccessPointIsRunning(void) {
+    printf("WiFiAccessPointIsRunning: not implemented on RP2040 yet (needs a radio and lwIP enabled)\n");
+    return false;
+}
+
+bool WiFiStationConnect(const char *ssid, const char *password) {
+    (void)ssid;
+    (void)password;
+    printf("WiFiStationConnect: not implemented on RP2040 yet (needs a radio and lwIP enabled)\n");
+    return false;
+}

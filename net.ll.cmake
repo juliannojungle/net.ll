@@ -52,7 +52,8 @@ if(PLATFORM_NAME STREQUAL "RP2040")
     set(PLATFORM_DEFINITIONS ${PLATFORM_DEFINITIONS} CYW43_LWIP=0)
 elseif(PLATFORM_NAME STREQUAL "ESP32")
     # nvs_flash is not optional: the WiFi driver keeps calibration data there.
-    set(PLATFORM_REQUIRES ${PLATFORM_REQUIRES} esp_wifi esp_netif esp_event nvs_flash)
+    # lwip carries the BSD socket headers the HTTP server is written against.
+    set(PLATFORM_REQUIRES ${PLATFORM_REQUIRES} esp_wifi esp_netif esp_event nvs_flash lwip)
 endif()
 
 if(PLATFORM_LIBRARIES)
@@ -124,7 +125,8 @@ endif()
 set(SOURCES
     ${SOURCES}
     "${NET_LL_PLATFORM_DIR}/WiFi.c"
-    "${NET_LL_PLATFORM_DIR}/HttpClient.c")
+    "${NET_LL_PLATFORM_DIR}/HttpClient.c"
+    "${NET_LL_PLATFORM_DIR}/HttpServer.c")
 
 set(INCLUDE_DIRS
     ${INCLUDE_DIRS}

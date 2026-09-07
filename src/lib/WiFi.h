@@ -67,4 +67,26 @@ void WiFiDeinitialize(void);
  */
 bool WiFiScan(WiFiNetwork networks[], uint16_t maxNetworks, uint16_t *foundNetworks);
 
+/* Overridable so a consumer whose own network overlaps this range can move it. */
+#ifndef WIFI_ACCESS_POINT_ADDRESS
+#define WIFI_ACCESS_POINT_ADDRESS "192.168.33.1"
+#endif
+
+/*
+ * Starts an access point advertising ssid at WIFI_ACCESS_POINT_ADDRESS. A null or
+ * empty password means an open access point.
+ *
+ * Requires a successful WiFiInitialize first, the same way WiFiScan does.
+ */
+bool WiFiAccessPointStart(const char *ssid, const char *password);
+bool WiFiAccessPointStop(void);
+bool WiFiAccessPointIsRunning(void);
+
+/*
+ * Joins ssid as a station, returning only once the connection is established or
+ * has failed. A null or empty password means an open network. Fails immediately
+ * while the access point is running.
+ */
+bool WiFiStationConnect(const char *ssid, const char *password);
+
 #endif /* __WIFI_H_ */
