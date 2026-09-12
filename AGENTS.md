@@ -108,6 +108,8 @@ src/lib/Platform/<Platform>/        one folder per platform, same file names in 
     WiFi.c                            bring-up and scan
     HttpClient.c                      the download
     CMakeLists.txt                    ESP32 only: ESP-IDF component registration
+    lwipopts.h                        RP2040 only: lwIP config for pico_cyw43_arch_lwip_poll
+    dhcpserver.{c,h}                  RP2040 only: vendored MIT DHCP server for the access point
 src/Dependency/fs.ll.cmake          fs.ll's build contract, copied here
 src/Dependency/fs.ll/               resolved through FS_LL_PATH — NOT a submodule, git-ignored
 src/Dependency/pico_sdk_import.cmake  stock pico-sdk locator, used by the RP2040 build
@@ -174,13 +176,15 @@ none.** No network operation here needs a thread of ours.
 | radio | none — borrows the host's, see §4 | CYW43439 via pico-sdk | native, via `esp_wifi` |
 | scan source | `netsh.exe` under WSL | `cyw43_wifi_scan` + poll loop | `esp_wifi_scan_start(block)` |
 | scan fields | all real; RSSI reconstructed from a percentage (§4) | all real, but no WPA3 (§6) | all real |
-| `HttpDownloadFile` | real: POSIX sockets + OpenSSL | **stub returning false** | **stub returning false** |
+| `HttpDownloadFile` | real: POSIX sockets + OpenSSL (HTTP + HTTPS) | real: lwIP's HTTP client, **HTTP only** | real: `esp_http_client`, **HTTP only** |
 | entry point | `main()` | `main()` | `app_main()` (`ESP_PLATFORM` defined) |
 
-**The download is implemented only on the Simulator.** On the two hardware platforms it prints a message
-and returns `false`, which keeps the contract linkable and a failure diagnosable on the device. That is
-deliberate and matches what pedal.guru already had: implementing it needs hardware to test on, and on the
-RP2040 it also needs lwIP (§5).
+**The download is implemented on all three platforms.** The Simulator does HTTP and HTTPS; the two
+hardware platforms do **HTTP only** for now, since HTTPS would pull in mbedTLS (RP2040) or a TLS build
+(ESP32) for RAM this project is trying to spare, and the OSM tile server answers plain HTTP anyway. The
+RP2040 drives lwIP's own client (`httpc_get_file_dns`) in poll mode; the ESP32 uses `esp_http_client`,
+whose `perform` blocks. Both stream the body to storage through fs.ll and stay synchronous. HTTPS on
+hardware is the last open item (§11).
 
 ## 4. The Simulator has no radio, so it borrows the host's
 
@@ -253,26 +257,41 @@ its own. Verified in the pico-sdk:
 - **What the SDK hands over is a stack, not a bus**: `cyw43_arch_init()`,
   `cyw43_arch_enable_sta_mode()`, and lwIP on top when TCP/IP is wanted.
 
-### Poll mode, and why lwIP is off for now
+### Poll mode, with lwIP on
 
 The driver has to be *serviced* for its callbacks to fire, and the SDK offers two ways.
 `PICO_CYW43_ARCH_THREADSAFE_BACKGROUND` services the chip from an interrupt behind the caller's back —
 which the synchronous rule forbids, and which `pico_cyw43_arch_none` forces. So net.ll links
-**`pico_cyw43_arch_poll`**, and the scan pumps `cyw43_arch_poll()` itself while waiting on
-`cyw43_wifi_scan_active()`. `pico_async_context_poll` creates no thread or task (verified: no
-`xTaskCreate`, no `multicore_launch`, no `pthread_create`).
+**`pico_cyw43_arch_lwip_poll`**, and every wait pumps `cyw43_arch_poll()` itself: the scan while
+`cyw43_wifi_scan_active()` holds, and the station connect while no address has arrived. The `poll`
+family creates no thread or task (verified: no `xTaskCreate`, no `multicore_launch`, no
+`pthread_create`), and `pico_cyw43_arch_lwip_poll` links `pico_lwip_nosys` — lwIP in **`NO_SYS=1` mode,
+no OS threads**, on the same `async_context`. **The synchronous rule survives lwIP intact.**
 
-**There is no ready-made "poll without lwIP" target.** `pico_cyw43_arch_poll` sets only
-`PICO_CYW43_ARCH_POLL=1`, and with `CYW43_LWIP` left undefined the driver **defaults to using lwIP** and
-then demands an `lwipopts.h`. So the contract publishes `CYW43_LWIP=0`.
+**Why lwIP is on, and why the target changed.** The scan works at the driver level and needs no TCP/IP,
+but station connect and the access point do: an association without an address is not a usable link, and
+the AP has to hand addresses out. `pico_cyw43_arch_poll` sets only `PICO_CYW43_ARCH_POLL=1`, and with
+`CYW43_LWIP` left undefined the driver defaults to lwIP and then demands an `lwipopts.h` — so previously
+the contract published `CYW43_LWIP=0` to keep the stack out while nothing called it. Now that connect and
+the AP are implemented, the contract publishes **`CYW43_LWIP=1`** and links `pico_cyw43_arch_lwip_poll`,
+and net.ll ships an `lwipopts.h` in `src/lib/Platform/RP2040/` (NO_SYS, DHCP client, values following the
+public pico-examples common configuration). The contract puts that folder on `INCLUDE_DIRS` for the
+RP2040 so lwIP finds the header; the consumer applies `CYW43_LWIP=1` at directory scope, as with any
+`PLATFORM_DEFINITIONS` value.
 
-**That is scope, not an aversion to lwIP.** lwIP is exactly what the RP2040 download will be built on —
-and lwIP even ships an HTTP client, `httpc_get_file_dns` in `lib/lwip/src/apps/http/http_client.c`, with
-HTTPS hanging off `httpc_connection_t`'s `altcp_allocator` and `pico_mbedtls` available for it. The point
-is that the download here is still a stub, so turning lwIP on now would mean writing and tuning an
-`lwipopts.h` on a chip with 264 KB of RAM for a stack nothing calls. When the download lands, the change
-is the target: `pico_cyw43_arch_lwip_poll`, which links `pico_lwip_nosys` — lwIP in **`NO_SYS=1` mode, no
-OS threads**, on the same `async_context`. **The synchronous rule survives lwIP intact.**
+**The access point's DHCP server is vendored.** lwIP carries only a DHCP *client*, and the ESP32 gets a
+server for free from esp-netif (`esp_netif_dhcps_*`); the RP2040 has no equivalent in the SDK. So
+`src/lib/Platform/RP2040/dhcpserver.{c,h}` is copied verbatim from the pico-examples access_point helper,
+which is MicroPython's server under the **MIT licence (Copyright (c) 2018-2019 Damien P. George)** — its
+header is left intact, and MIT composes with this repository's AGPL. It needs only UDP from the stack.
+`WiFiAccessPointStart` sets the AP netif's address to `WIFI_ACCESS_POINT_ADDRESS` and starts that server,
+mirroring the ESP32's stop-set-start-DHCP flow.
+
+**The download now uses lwIP's own HTTP client on the RP2040.** `HttpDownloadFile` calls
+`httpc_get_file_dns` (linked through `pico_lwip_http`), writes each received pbuf straight to storage in
+the `recv_fn`, and waits for the `result_fn` while pumping `cyw43_arch_poll()` — the same poll discipline
+as the scan and the connect. HTTP only: HTTPS would hang off `httpc_connection_t`'s `altcp_allocator` with
+`pico_mbedtls`, which is deferred (§11).
 
 ### The board matters
 
@@ -328,7 +347,7 @@ accumulate into one build.
 | `PLATFORM_DEFINITIONS` | out. Compile definitions the consumer must apply. |
 
 `PLATFORM_DEFINITIONS` is **new in this library** — hal.ll and fs.ll publish only the first two lists. It
-exists because `CYW43_LWIP=0` has to reach the **pico-sdk's own** cyw43 sources, not just ours, so a
+exists because `CYW43_LWIP=1` has to reach the **pico-sdk's own** cyw43 sources, not just ours, so a
 target-scoped definition is not enough and the consumer has to apply it at directory scope. The contract
 cannot do that itself (see the rules below), so it publishes the value and the consumer applies it. In
 this repository the root `CMakeLists.txt` does that in its RP2040 branch.
@@ -410,8 +429,8 @@ bare ESP32-S3 straight out of USB.
 | platform | result |
 |---|---|
 | Simulator | builds, **and the sample runs correctly** — lists the real networks in range through `netsh.exe`, with real authentication, channel and signal, including a hidden one shown as `<hidden>` |
-| RP2040 | builds and links, produces `net.ll.uf2` (~558 KB) for `PICO_BOARD=pico_w` |
-| ESP32 | builds and links, produces `net.ll.bin` (~767 KB) for `esp32s3` |
+| RP2040 | builds and links, produces `net.ll.uf2` (~658 KB) for `PICO_BOARD=pico_w`, with lwIP on (`pico_cyw43_arch_lwip_poll` + `pico_lwip_http`) and the full API — scan, station connect, access point, and an HTTP download |
+| ESP32 | builds and links, produces `net.ll.bin` (~767 KB) for `esp32s3`, with the full API including an HTTP download over `esp_http_client` |
 
 Also verified: an external consumer with **nothing pinned**, which cloned fs.ll and (inside it) hal.ll at
 configure time and then built and ran clean.
@@ -421,9 +440,13 @@ configure time and then built and ran clean.
 - **Neither firmware has been flashed or run.** Both compile and link; nothing more is established. So
   the RP2040 and ESP32 `WiFi.c` — bring-up and scan alike — is **new code that has never executed**. That
   includes the poll loop, the auth-mode mapping and the ESP32 NVS/netif/event-loop sequence.
+- **The RP2040 station connect and access point are new and unrun.** So is the vendored DHCP server on
+  this platform, the `lwipopts.h`, and the connect poll-until-address loop. They compile and link against
+  `pico_cyw43_arch_lwip_poll` with `PICO_BOARD=pico_w`; that is all that is established.
 - **`HttpDownloadFile` has only ever run on the Simulator**, where it is the same code that already works
-  inside pedal.guru. It is a stub on both hardware platforms, so a clean build says nothing about
-  downloading on a device.
+  inside pedal.guru. The RP2040 (`httpc_get_file_dns` + poll loop) and ESP32 (`esp_http_client`)
+  implementations are new code that compiles and links but has never executed, so a clean build says
+  nothing about downloading on a device.
 - Nothing here is validated **on hardware**. Statements about the RP2040 and ESP32 come from reading the
   SDKs and compiling against them.
 
@@ -431,9 +454,9 @@ configure time and then built and ran clean.
 
 Each needs a decision from the dev. None is scheduled.
 
-- **Connect is deliberately not implemented.** The dev's call: build it when there is hardware to test on
-  and a consumer that needs it. The intended flow is that an application shows the scanned networks, the
-  **user picks one**, and a failure moves on to the next.
+- **Connect on the Simulator is still a no-op**, and deliberately so. The RP2040 and ESP32 now implement
+  `WiFiStationConnect`, but the Simulator has no radio to join a network with. The intended flow is that
+  an application shows the scanned networks, the **user picks one**, and a failure moves on to the next.
   One finding kept so the research is not repeated: a Simulator connect that always succeeded would make
   that retry flow untestable, which defeats the purpose. `netsh.exe wlan show interfaces` reports the
   host's current `SSID` and `AP BSSID` (both locale-robust anchors), so the Simulator could succeed for
@@ -442,8 +465,6 @@ Each needs a decision from the dev. None is scheduled.
 - **Where WiFi credentials come from is not net.ll's question.** It has no answer here by design: the
   scan needs none, and the application owns that. **No submodule may know pedal.guru exists**, so pulling
   the application's settings type down into this library is not an option at any price.
-- **The download on hardware**, which on RP2040 means enabling lwIP (§5) and on ESP32 means
-  `esp_http_client`. Blocked on hardware for the RP2040 target board, which has no radio yet.
 - **A native-Linux scan.** Not written on purpose: the dev's Simulator host is Windows + WSL, so an
   nl80211/`libnl` implementation — or shelling to `nmcli`/`iw` — would be a second body of code, with
   privilege problems attached, for a host nobody currently runs. Add it the day a real Linux desktop
@@ -454,3 +475,8 @@ Each needs a decision from the dev. None is scheduled.
   replace it. hal.ll has the same item open.
 - **The `Toolchain/` folder does not exist here.** gui.ll's is the complete one and is reused across the
   collection; the dev expects it to become its own project. Do not start a copy.
+- **HTTPS on the two hardware platforms — last, and priority zero.** The download is HTTP only on the
+  RP2040 and ESP32. HTTPS would add mbedTLS on the RP2040 (an `mbedtls_config.h`, per-connection RAM on a
+  264 KB chip, and a certificate-trust decision) and a TLS build on the ESP32. The OSM tile server answers
+  plain HTTP, so this buys nothing today and costs the RAM the project is trying to reduce. The dev's
+  call: leave it as the final item, done only when there is a concrete need.

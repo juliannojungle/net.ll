@@ -48,7 +48,9 @@ if(PLATFORM_NAME STREQUAL "RP2040")
     # The lwip_poll variant links pico_lwip_nosys, so lwIP runs in NO_SYS=1 mode with no OS
     # threads on the same async_context -- the synchronous rule survives it. Station connect
     # and the access point need the TCP/IP stack; the scan does not.
-    set(PLATFORM_LIBRARIES ${PLATFORM_LIBRARIES} pico_cyw43_arch_lwip_poll)
+    # pico_lwip_http brings lwIP's own HTTP client (httpc_get_file_dns), which HttpDownloadFile
+    # drives in poll mode. HTTP only for now: HTTPS would pull in mbedTLS, which is out of scope.
+    set(PLATFORM_LIBRARIES ${PLATFORM_LIBRARIES} pico_cyw43_arch_lwip_poll pico_lwip_http)
     # The consumer must apply this at directory scope so the pico-sdk's own cyw43 sources
     # see it too, and must add the platform folder to PICO_BOARD_HEADER_DIRS so lwipopts.h
     # is found. This contract only publishes the value.
@@ -56,7 +58,7 @@ if(PLATFORM_NAME STREQUAL "RP2040")
 elseif(PLATFORM_NAME STREQUAL "ESP32")
     # nvs_flash is not optional: the WiFi driver keeps calibration data there.
     # lwip carries the BSD socket headers the HTTP server is written against.
-    set(PLATFORM_REQUIRES ${PLATFORM_REQUIRES} esp_wifi esp_netif esp_event nvs_flash lwip)
+    set(PLATFORM_REQUIRES ${PLATFORM_REQUIRES} esp_wifi esp_netif esp_event nvs_flash lwip esp_http_client)
 endif()
 
 if(PLATFORM_LIBRARIES)

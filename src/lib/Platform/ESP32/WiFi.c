@@ -264,7 +264,7 @@ static void BuildAccessPointConfig(wifi_config_t *config, const char *ssid, cons
     }
 }
 
-static bool ApplyAccessPointConfig(const wifi_config_t *config) {
+static bool ApplyAccessPointConfig(wifi_config_t *config) {
     if (esp_wifi_set_mode(WIFI_MODE_AP) != ESP_OK) {
         printf("WiFi: could not switch the radio to access point mode\n");
         return false;

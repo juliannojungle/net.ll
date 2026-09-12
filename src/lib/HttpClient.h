@@ -29,10 +29,9 @@
  *
  * Synchronous: it returns only once the transfer has finished or failed.
  *
- * Implemented on the Simulator (POSIX sockets + OpenSSL for HTTPS). On RP2040
- * and ESP32 it is still a stub returning false; see AGENTS.md.
- *
- * Returns true on success, false on failure.
+ * Simulator over POSIX sockets and OpenSSL (HTTP and HTTPS)
+ * RP2040 over lwIP's HTTP client (HTTP only)
+ * ESP32 over esp_http_client (HTTP only)
  */
 bool HttpDownloadFile(const char *url, const char *filePath);
 
