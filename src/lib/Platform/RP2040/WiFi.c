@@ -27,6 +27,9 @@
 
 #include "pico/cyw43_arch.h"
 #include "pico/time.h"
+#include "lwip/ip4_addr.h"
+#include "lwip/netif.h"
+#include "dhcpserver.h"
 
 typedef struct {
     WiFiNetwork *Networks;
@@ -35,8 +38,15 @@ typedef struct {
 } ScanTarget;
 
 #define SCAN_TIMEOUT_MS 15000
+#define STATION_CONNECT_TIMEOUT_MS 15000
+#define STATION_CONNECT_POLL_MS 100
+#define ACCESS_POINT_NETMASK "255.255.255.0"
 
 static bool wifiInitialized = false;
+static bool accessPointRunning = false;
+static dhcp_server_t dhcpServer;
+
+bool WiFiAccessPointStop(void);
 
 /* A scan result's auth_mode is NOT one of the CYW43_AUTH_* constants, despite what
  * the driver's own comment suggests: those are 32-bit values used when connecting,
@@ -109,6 +119,7 @@ void WiFiDeinitialize(void) {
         return;
     }
 
+    WiFiAccessPointStop();
     cyw43_arch_deinit();
     wifiInitialized = false;
 }
@@ -151,25 +162,98 @@ bool WiFiScan(WiFiNetwork networks[], uint16_t maxNetworks, uint16_t *foundNetwo
     return true;
 }
 
+static void StartAccessPointDhcp(void) {
+    ip4_addr_t gateway;
+    ip4_addr_t netmask;
+    ip4addr_aton(WIFI_ACCESS_POINT_ADDRESS, &gateway);
+    ip4addr_aton(ACCESS_POINT_NETMASK, &netmask);
+
+    struct netif *accessPointNetif = &cyw43_state.netif[CYW43_ITF_AP];
+    netif_set_addr(accessPointNetif, &gateway, &netmask, &gateway);
+
+    /* lwIP carries only a DHCP client, so clients get their address from the vendored
+     * MicroPython server, handing out leases in the gateway's subnet. */
+    dhcp_server_init(&dhcpServer, accessPointNetif, &gateway, &netmask);
+}
+
 bool WiFiAccessPointStart(const char *ssid, const char *password) {
-    (void)ssid;
-    (void)password;
-    printf("WiFiAccessPointStart: not implemented on RP2040 yet (needs a radio and lwIP enabled)\n");
-    return false;
+    if (ssid == NULL || ssid[0] == '\0') return false;
+
+    if (!wifiInitialized) {
+        printf("WiFi: WiFiInitialize must succeed before starting an access point\n");
+        return false;
+    }
+
+    if (accessPointRunning) return true;
+
+    uint32_t authMode = (password == NULL || password[0] == '\0') ? CYW43_AUTH_OPEN : CYW43_AUTH_WPA2_AES_PSK;
+    cyw43_arch_enable_ap_mode(ssid, password, authMode);
+
+    StartAccessPointDhcp();
+    accessPointRunning = true;
+    return true;
 }
 
 bool WiFiAccessPointStop(void) {
+    if (!accessPointRunning) return true;
+
+    dhcp_server_deinit(&dhcpServer);
+    cyw43_arch_disable_ap_mode();
+    accessPointRunning = false;
     return true;
 }
 
 bool WiFiAccessPointIsRunning(void) {
-    printf("WiFiAccessPointIsRunning: not implemented on RP2040 yet (needs a radio and lwIP enabled)\n");
+    return accessPointRunning;
+}
+
+static bool StationHasAddress(void) {
+    const struct netif *stationNetif = &cyw43_state.netif[CYW43_ITF_STA];
+
+    return cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA) == CYW43_LINK_UP &&
+           !ip4_addr_isany_val(*netif_ip4_addr(stationNetif));
+}
+
+/* Polled rather than event-driven so the call returns only once the outcome is known,
+ * without this library owning a thread to wait on. An address is what makes the link
+ * usable, so association alone is not enough. The wait pumps the driver itself. */
+static bool WaitForStationAddress(void) {
+    absolute_time_t deadline = make_timeout_time_ms(STATION_CONNECT_TIMEOUT_MS);
+
+    while (absolute_time_diff_us(get_absolute_time(), deadline) > 0) {
+        if (StationHasAddress()) return true;
+
+        cyw43_arch_poll();
+        sleep_ms(STATION_CONNECT_POLL_MS);
+    }
+
     return false;
 }
 
 bool WiFiStationConnect(const char *ssid, const char *password) {
-    (void)ssid;
-    (void)password;
-    printf("WiFiStationConnect: not implemented on RP2040 yet (needs a radio and lwIP enabled)\n");
+    if (ssid == NULL || ssid[0] == '\0') return false;
+
+    if (!wifiInitialized) {
+        printf("WiFi: WiFiInitialize must succeed before connecting\n");
+        return false;
+    }
+
+    /* One radio, and it cannot hold both modes. */
+    if (accessPointRunning) {
+        printf("WiFi: cannot connect while the access point is running\n");
+        return false;
+    }
+
+    bool open = (password == NULL || password[0] == '\0');
+    uint32_t authMode = open ? CYW43_AUTH_OPEN : CYW43_AUTH_WPA2_AES_PSK;
+
+    if (cyw43_arch_wifi_connect_async(ssid, open ? NULL : password, authMode) != 0) {
+        printf("WiFi: cyw43_arch_wifi_connect_async failed\n");
+        return false;
+    }
+
+    if (WaitForStationAddress()) return true;
+
+    printf("WiFi: could not connect to %s\n", ssid);
     return false;
 }

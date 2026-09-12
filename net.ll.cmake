@@ -45,11 +45,14 @@ endif()
 if(PLATFORM_NAME STREQUAL "RP2040")
     # poll mode, not threadsafe_background: every network operation here is synchronous and
     # net.ll starts no thread, so nothing may service the radio behind the caller's back.
-    set(PLATFORM_LIBRARIES ${PLATFORM_LIBRARIES} pico_cyw43_arch_poll)
-    # There is no ready-made "poll without lwIP" target, and with CYW43_LWIP undefined the
-    # driver defaults to using lwIP and then demands an lwipopts.h. Downloading on this
-    # platform is not implemented yet, so the TCP/IP stack is left out until it is.
-    set(PLATFORM_DEFINITIONS ${PLATFORM_DEFINITIONS} CYW43_LWIP=0)
+    # The lwip_poll variant links pico_lwip_nosys, so lwIP runs in NO_SYS=1 mode with no OS
+    # threads on the same async_context -- the synchronous rule survives it. Station connect
+    # and the access point need the TCP/IP stack; the scan does not.
+    set(PLATFORM_LIBRARIES ${PLATFORM_LIBRARIES} pico_cyw43_arch_lwip_poll)
+    # The consumer must apply this at directory scope so the pico-sdk's own cyw43 sources
+    # see it too, and must add the platform folder to PICO_BOARD_HEADER_DIRS so lwipopts.h
+    # is found. This contract only publishes the value.
+    set(PLATFORM_DEFINITIONS ${PLATFORM_DEFINITIONS} CYW43_LWIP=1)
 elseif(PLATFORM_NAME STREQUAL "ESP32")
     # nvs_flash is not optional: the WiFi driver keeps calibration data there.
     # lwip carries the BSD socket headers the HTTP server is written against.
@@ -128,9 +131,17 @@ set(SOURCES
     "${NET_LL_PLATFORM_DIR}/HttpClient.c"
     "${NET_LL_PLATFORM_DIR}/HttpServer.c")
 
+if(PLATFORM_NAME STREQUAL "RP2040")
+    set(SOURCES ${SOURCES} "${NET_LL_PLATFORM_DIR}/dhcpserver.c")
+endif()
+
 set(INCLUDE_DIRS
     ${INCLUDE_DIRS}
     "${NET_LL_LIB_DIR}")
+
+if(PLATFORM_NAME STREQUAL "RP2040")
+    set(INCLUDE_DIRS ${INCLUDE_DIRS} "${NET_LL_PLATFORM_DIR}")
+endif()
 
 # Guards against the same net.ll being included by more than one sibling library.
 list(REMOVE_DUPLICATES SOURCES)
