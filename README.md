@@ -6,7 +6,7 @@
 
 This is a lightweight, bare-metal network library for embedded systems.
 
-It does two things: lists the WiFi access points in range, and downloads a file over HTTP or HTTPS
+It does two things: lists the WiFi access points in range, and downloads a file over HTTP
 straight to storage. Both are **synchronous**, and the library starts no threads of its own.
 
 One codebase targets three platforms: **RP2040** (via pico-sdk), **ESP32** (via ESP-IDF) and a
@@ -16,7 +16,7 @@ One codebase targets three platforms: **RP2040** (via pico-sdk), **ESP32** (via 
 
 - 📡 **WiFi scan** — one entry per access point, with SSID, BSSID, channel, authentication mode and signal
   strength, filled into an array you own. No callbacks.
-- ⬇️ **HTTP/HTTPS download to storage** — the body is streamed straight to the file system rather than
+- ⬇️ **HTTP download to storage** — the body is streamed straight to the file system rather than
   buffered, because embedded targets have little RAM to spare.
 - 🔄 **Same API on every platform** — the platform layer is swapped at build time, so consuming code needs
   no `#ifdef`.
@@ -65,8 +65,5 @@ cmake -B build -DPLATFORM_NAME=RP2040 && cmake --build build
 source ~/esp-idf/export.sh && idf.py -DPLATFORM_NAME=ESP32 build
 ```
 
-## Status
-
-All three platforms build clean, and the Simulator sample runs. **Connecting to a network is not
-implemented yet**, and the download is implemented on the Simulator only — on RP2040 and ESP32 it is still
-a stub. Neither firmware has been flashed. See `AGENTS.md` for what is verified and what is not.
+---
+<sup>[@juliannojungle](https://github.com/juliannojungle), 2026</sup>
