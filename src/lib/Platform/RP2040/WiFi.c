@@ -18,13 +18,7 @@
 */
 
 /* RP2040 WiFi through the CYW43439, which the pico-sdk drives over a
- * PIO-implemented half-duplex gSPI. The bus and its driver belong to the SDK,
- * which is why this file talks to cyw43_arch rather than to hal.ll.
- *
- * Built in poll mode (PICO_CYW43_ARCH_POLL) on purpose: the alternative has the
- * SDK service the chip from an interrupt behind the caller's back, and every
- * network operation here is synchronous with no thread of our own. So the scan
- * pumps cyw43_arch_poll() itself while it waits. */
+ * PIO-implemented half-duplex gSPI, using cyw43_arch from pico-SDK. */
 
 #include "WiFi.h"
 
@@ -34,15 +28,12 @@
 #include "pico/cyw43_arch.h"
 #include "pico/time.h"
 
-/* The driver reports results through a callback; this carries the caller's
- * array into it, since the callback only gets a void*. */
 typedef struct {
     WiFiNetwork *Networks;
     uint16_t MaxNetworks;
     uint16_t FoundNetworks;
 } ScanTarget;
 
-/* A scan that never goes quiet must not hang the caller. */
 #define SCAN_TIMEOUT_MS 15000
 
 static bool wifiInitialized = false;
@@ -157,9 +148,9 @@ bool WiFiScan(WiFiNetwork networks[], uint16_t maxNetworks, uint16_t *foundNetwo
 
     *foundNetworks = target.FoundNetworks;
 
-    /* An empty result is a success: a scan is not repeatable. */
     return true;
 }
+
 bool WiFiAccessPointStart(const char *ssid, const char *password) {
     (void)ssid;
     (void)password;

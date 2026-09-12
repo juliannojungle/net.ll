@@ -42,24 +42,31 @@
 static bool wifiInitialized = false;
 
 static bool RunningUnderWsl(void) {
-    if (getenv("WSL_INTEROP") != NULL || getenv("WSL_DISTRO_NAME") != NULL) return true;
+    if (getenv("WSL_INTEROP") != NULL || getenv("WSL_DISTRO_NAME") != NULL) {
+        return true;
+    }
 
     FILE *osRelease = fopen("/proc/sys/kernel/osrelease", "r");
 
-    if (osRelease == NULL) return false;
+    if (osRelease == NULL) {
+        return false;
+    }
 
     char release[LINE_BUFFER_SIZE];
     bool isWsl = false;
 
-    if (fgets(release, sizeof(release), osRelease) != NULL)
+    if (fgets(release, sizeof(release), osRelease) != NULL) {
         isWsl = (strstr(release, "microsoft") != NULL) || (strstr(release, "WSL") != NULL);
+    }
 
     fclose(osRelease);
     return isWsl;
 }
 
 static const char *SkipBlanks(const char *text) {
-    while (*text == ' ' || *text == '\t') text++;
+    while (*text == ' ' || *text == '\t') {
+        text++;
+    }
 
     return text;
 }
@@ -67,11 +74,15 @@ static const char *SkipBlanks(const char *text) {
 static char *ValueAfterColon(char *line) {
     char *value = strchr(line, ':');
 
-    if (value == NULL) return NULL;
+    if (value == NULL) {
+        return NULL;
+    }
 
     value++;
 
-    while (*value == ' ' || *value == '\t') value++;
+    while (*value == ' ' || *value == '\t') {
+        value++;
+    }
 
     size_t length = strlen(value);
 
@@ -88,9 +99,13 @@ static bool IsLabelledLine(const char *line, const char *labelPt, const char *la
     const char *cursor = SkipBlanks(line);
     const char *label = NULL;
 
-    if (strncmp(cursor, labelPt, strlen(labelPt)) == 0) label = labelPt;
-    else if (strncmp(cursor, labelEn, strlen(labelEn)) == 0) label = labelEn;
-    else return false;
+    if (strncmp(cursor, labelPt, strlen(labelPt)) == 0) {
+        label = labelPt;
+    } else if (strncmp(cursor, labelEn, strlen(labelEn)) == 0) {
+        label = labelEn;
+    } else {
+        return false;
+    }
 
     cursor = SkipBlanks(cursor + strlen(label));
     return (*cursor == ':');
@@ -101,11 +116,15 @@ static bool IsPrefixedIndexLine(const char *line, const char *keyword) {
 
     size_t keywordLength = strlen(keyword);
 
-    if (strncmp(cursor, keyword, keywordLength) != 0) return false;
+    if (strncmp(cursor, keyword, keywordLength) != 0) {
+        return false;
+    }
 
     cursor += keywordLength;
 
-    if (*cursor != ' ') return false;
+    if (*cursor != ' ') {
+        return false;
+    }
 
     cursor = SkipBlanks(cursor);
     /* An index must follow, otherwise "SSID" alone would match. */
@@ -120,14 +139,24 @@ static void ParseBssid(const char *text, uint8_t bssid[WIFI_BSSID_LENGTH]) {
         return;
     }
 
-    for (int i = 0; i < WIFI_BSSID_LENGTH; i++) bssid[i] = (uint8_t)octets[i];
+    for (int i = 0; i < WIFI_BSSID_LENGTH; i++) {
+        bssid[i] = (uint8_t)octets[i];
+    }
 }
 
 static WiFiAuthMode AuthModeFromText(const char *text) {
-    if (strstr(text, "WPA3") != NULL) return WIFI_AUTH_MODE_WPA3;
-    if (strstr(text, "WPA2") != NULL) return WIFI_AUTH_MODE_WPA2;
-    if (strstr(text, "WPA") != NULL) return WIFI_AUTH_MODE_WPA;
-    if (strstr(text, "WEP") != NULL) return WIFI_AUTH_MODE_WEP;
+    if (strstr(text, "WPA3") != NULL) {
+        return WIFI_AUTH_MODE_WPA3;
+    }
+    if (strstr(text, "WPA2") != NULL) {
+        return WIFI_AUTH_MODE_WPA2;
+    }
+    if (strstr(text, "WPA") != NULL) {
+        return WIFI_AUTH_MODE_WPA;
+    }
+    if (strstr(text, "WEP") != NULL) {
+        return WIFI_AUTH_MODE_WEP;
+    }
 
     return WIFI_AUTH_MODE_OPEN;
 }
@@ -135,8 +164,11 @@ static WiFiAuthMode AuthModeFromText(const char *text) {
 static int16_t RssiFromSignalPercentage(const char *text) {
     int percentage = atoi(text);
 
-    if (percentage < 0) percentage = 0;
-    else if (percentage > 100) percentage = 100;
+    if (percentage < 0) {
+        percentage = 0;
+    } else if (percentage > 100) {
+        percentage = 100;
+    }
 
     return (int16_t)((percentage / 2) - 100);
 }
@@ -153,66 +185,78 @@ bool WiFiInitialize(void) {
 
 void WiFiDeinitialize(void) { wifiInitialized = false; }
 
-bool WiFiScan(WiFiNetwork networks[], uint16_t maxNetworks, uint16_t *foundNetworks) {
-    if (networks == NULL || foundNetworks == NULL || maxNetworks == 0) return false;
+typedef struct {
+    WiFiNetwork *networks;
+    uint16_t maxNetworks;
+    uint16_t *foundNetworks;
+    char currentSsid[WIFI_SSID_MAX_LENGTH + 1];
+    WiFiAuthMode currentAuthMode;
+    bool haveSsid;
+    WiFiNetwork *currentNetwork;
+} ScanState;
 
-    *foundNetworks = 0;
+static void BeginNetwork(ScanState *state, const char *ssid) {
+    snprintf(state->currentSsid, sizeof(state->currentSsid), "%s", ssid != NULL ? ssid : "");
+    state->currentAuthMode = FALLBACK_AUTH_MODE;
+    state->haveSsid = true;
+    state->currentNetwork = NULL;
+}
 
-    if (!wifiInitialized) {
-        printf("WiFi: WiFiInitialize must succeed before scanning\n");
-        return false;
+static void BeginBssid(ScanState *state, const char *bssidText) {
+    state->currentNetwork = NULL;
+
+    if (!state->haveSsid || *state->foundNetworks >= state->maxNetworks || bssidText == NULL) {
+        return;
     }
 
-    FILE *netsh = popen(NETSH_COMMAND, "r");
-    if (netsh == NULL) {
-        printf("WiFi: could not run netsh.exe\n");
-        return false;
-    }
+    WiFiNetwork *network = &state->networks[*state->foundNetworks];
+    memset(network, 0, sizeof(*network));
+    snprintf(network->Ssid, sizeof(network->Ssid), "%s", state->currentSsid);
+    ParseBssid(bssidText, network->Bssid);
+    network->AuthMode = state->currentAuthMode;
+    network->Channel = FALLBACK_CHANNEL;
+    network->Rssi = FALLBACK_RSSI;
+    state->currentNetwork = network;
+    (*state->foundNetworks)++;
+}
 
-    char currentSsid[WIFI_SSID_MAX_LENGTH + 1] = {0};
-    WiFiAuthMode currentAuthMode = FALLBACK_AUTH_MODE;
-    bool haveSsid = false;
-    WiFiNetwork *currentNetwork = NULL;
+static void ConsumeLine(ScanState *state, char *line) {
+    if (IsPrefixedIndexLine(line, "BSSID")) {
+        BeginBssid(state, ValueAfterColon(line));
+    } else if (IsPrefixedIndexLine(line, "SSID")) {
+        BeginNetwork(state, ValueAfterColon(line));
+    } else if (IsLabelledLine(line, LABEL_AUTHENTICATION_PT, LABEL_AUTHENTICATION_EN)) {
+        const char *value = ValueAfterColon(line);
+
+        if (value != NULL) {
+            state->currentAuthMode = AuthModeFromText(value);
+        }
+    } else if (state->currentNetwork != NULL && IsLabelledLine(line, LABEL_SIGNAL_PT, LABEL_SIGNAL_EN)) {
+        const char *value = ValueAfterColon(line);
+
+        if (value != NULL) {
+            state->currentNetwork->Rssi = RssiFromSignalPercentage(value);
+        }
+    } else if (state->currentNetwork != NULL && IsLabelledLine(line, LABEL_CHANNEL_PT, LABEL_CHANNEL_EN)) {
+        const char *value = ValueAfterColon(line);
+
+        if (value != NULL) {
+            state->currentNetwork->Channel = (uint16_t)atoi(value);
+        }
+    }
+}
+
+static bool ParseNetshOutput(FILE *netsh, WiFiNetwork networks[], uint16_t maxNetworks, uint16_t *foundNetworks) {
+    ScanState state = {.networks = networks,
+        .maxNetworks = maxNetworks,
+        .foundNetworks = foundNetworks,
+        .currentAuthMode = FALLBACK_AUTH_MODE,
+        .haveSsid = false,
+        .currentNetwork = NULL};
     char line[LINE_BUFFER_SIZE];
 
     while (fgets(line, sizeof(line), netsh) != NULL) {
-        if (IsPrefixedIndexLine(line, "BSSID")) {
-            currentNetwork = NULL;
-
-            if (!haveSsid || *foundNetworks >= maxNetworks) continue;
-
-            const char *value = ValueAfterColon(line);
-
-            if (value == NULL) continue;
-
-            currentNetwork = &networks[*foundNetworks];
-            memset(currentNetwork, 0, sizeof(*currentNetwork));
-            snprintf(currentNetwork->Ssid, sizeof(currentNetwork->Ssid), "%s", currentSsid);
-            ParseBssid(value, currentNetwork->Bssid);
-            currentNetwork->AuthMode = currentAuthMode;
-            currentNetwork->Channel = FALLBACK_CHANNEL;
-            currentNetwork->Rssi = FALLBACK_RSSI;
-            (*foundNetworks)++;
-        } else if (IsPrefixedIndexLine(line, "SSID")) {
-            const char *value = ValueAfterColon(line);
-            /* A hidden network reports an empty name, which is valid. */
-            snprintf(currentSsid, sizeof(currentSsid), "%s", value != NULL ? value : "");
-            currentAuthMode = FALLBACK_AUTH_MODE;
-            haveSsid = true;
-            currentNetwork = NULL;
-        } else if (IsLabelledLine(line, LABEL_AUTHENTICATION_PT, LABEL_AUTHENTICATION_EN)) {
-            const char *value = ValueAfterColon(line);
-
-            if (value != NULL) currentAuthMode = AuthModeFromText(value);
-        } else if (currentNetwork != NULL && IsLabelledLine(line, LABEL_SIGNAL_PT, LABEL_SIGNAL_EN)) {
-            const char *value = ValueAfterColon(line);
-
-            if (value != NULL) currentNetwork->Rssi = RssiFromSignalPercentage(value);
-        } else if (currentNetwork != NULL && IsLabelledLine(line, LABEL_CHANNEL_PT, LABEL_CHANNEL_EN)) {
-            const char *value = ValueAfterColon(line);
-
-            if (value != NULL) currentNetwork->Channel = (uint16_t)atoi(value);
-        }
+        ConsumeLine(&state, line);
     }
 
     int status = pclose(netsh);
@@ -222,22 +266,44 @@ bool WiFiScan(WiFiNetwork networks[], uint16_t maxNetworks, uint16_t *foundNetwo
         return false;
     }
 
-    /* An empty result is a success: a scan is not repeatable. */
     return true;
 }
 
-/* There is no radio here, so the access point is a successful no-op. */
+bool WiFiScan(WiFiNetwork networks[], uint16_t maxNetworks, uint16_t *foundNetworks) {
+    if (networks == NULL || foundNetworks == NULL || maxNetworks == 0) {
+        return false;
+    }
+
+    *foundNetworks = 0;
+
+    if (!wifiInitialized) {
+        printf("WiFi: WiFiInitialize must succeed before scanning\n");
+        return false;
+    }
+
+    FILE *netsh = popen(NETSH_COMMAND, "r");
+
+    if (netsh == NULL) {
+        printf("WiFi: could not run netsh.exe\n");
+        return false;
+    }
+
+    return ParseNetshOutput(netsh, networks, maxNetworks, foundNetworks);
+}
+
 static bool accessPointRunning = false;
 
 bool WiFiAccessPointStart(const char *ssid, const char *password) {
     (void)password;
     printf("WiFi: no radio on the Simulator, the access point \"%s\" is a no-op\n", ssid != NULL ? ssid : "");
     accessPointRunning = true;
+
     return true;
 }
 
 bool WiFiAccessPointStop(void) {
     accessPointRunning = false;
+
     return true;
 }
 
@@ -247,5 +313,6 @@ bool WiFiStationConnect(const char *ssid, const char *password) {
     (void)ssid;
     (void)password;
     printf("WiFi: connecting as a station is not implemented on the Simulator\n");
+
     return false;
 }
