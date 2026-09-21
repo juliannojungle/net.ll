@@ -25,6 +25,7 @@
 
 #define WIFI_SSID_MAX_LENGTH 32
 #define WIFI_BSSID_LENGTH 6
+#define SCAN_MAX_NETWORKS 32
 
 #ifndef WIFI_ACCESS_POINT_ADDRESS
 #define WIFI_ACCESS_POINT_ADDRESS "192.168.33.1"
@@ -50,6 +51,9 @@ typedef struct {
 bool WiFiInitialize(void);
 void WiFiDeinitialize(void);
 bool WiFiScan(WiFiNetwork networks[], uint16_t maxNetworks, uint16_t *foundNetworks);
+bool WiFiScanStart(void);
+bool WiFiScanIsComplete(void);
+bool WiFiScanGetResults(WiFiNetwork networks[], uint16_t maxNetworks, uint16_t *foundNetworks);
 bool WiFiAccessPointStart(const char *ssid, const char *password);
 bool WiFiAccessPointStop(void);
 bool WiFiAccessPointIsRunning(void);

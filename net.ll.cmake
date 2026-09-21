@@ -50,7 +50,7 @@ if(PLATFORM_NAME STREQUAL "RP2040")
     # and the access point need the TCP/IP stack; the scan does not.
     # pico_lwip_http brings lwIP's own HTTP client (httpc_get_file_dns), which HttpDownloadFile
     # drives in poll mode. HTTP only for now: HTTPS would pull in mbedTLS, which is out of scope.
-    set(PLATFORM_LIBRARIES ${PLATFORM_LIBRARIES} pico_cyw43_arch_lwip_poll pico_lwip_http)
+    set(PLATFORM_LIBRARIES ${PLATFORM_LIBRARIES} pico_cyw43_arch_lwip_sys_freertos pico_lwip_http)
     # The consumer must apply this at directory scope so the pico-sdk's own cyw43 sources
     # see it too, and must add the platform folder to PICO_BOARD_HEADER_DIRS so lwipopts.h
     # is found. This contract only publishes the value.
@@ -135,6 +135,7 @@ set(SOURCES
 
 if(PLATFORM_NAME STREQUAL "RP2040")
     set(SOURCES ${SOURCES} "${NET_LL_PLATFORM_DIR}/dhcpserver.c")
+    set(SOURCES ${SOURCES} "${NET_LL_PLATFORM_DIR}/dnsserver.c")
 endif()
 
 set(INCLUDE_DIRS

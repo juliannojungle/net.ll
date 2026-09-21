@@ -24,12 +24,16 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "FreeRTOS.h"
+#include "task.h"
 
 #include "pico/cyw43_arch.h"
 #include "pico/time.h"
 #include "lwip/ip4_addr.h"
 #include "lwip/netif.h"
+#include "lwip/tcpip.h"
 #include "dhcpserver.h"
+#include "dnsserver.h"
 
 typedef struct {
     WiFiNetwork *Networks;
@@ -45,6 +49,11 @@ typedef struct {
 static bool wifiInitialized = false;
 static bool accessPointRunning = false;
 static dhcp_server_t dhcpServer;
+static dns_server_t dnsServer;
+static WiFiNetwork scanNetworks[SCAN_MAX_NETWORKS];
+static ScanTarget scanTarget;
+static bool scanInProgress = false;
+static ip4_addr_t gateway, netmask;
 
 bool WiFiAccessPointStop(void);
 
@@ -82,19 +91,18 @@ static int ScanResultReceived(void *environment, const cyw43_ev_scan_result_t *r
 
     WiFiNetwork *network = &target->Networks[target->FoundNetworks];
     memset(network, 0, sizeof(*network));
-
     size_t ssidLength = result->ssid_len;
+
     if (ssidLength > WIFI_SSID_MAX_LENGTH) {
         ssidLength = WIFI_SSID_MAX_LENGTH;
     }
+
     memcpy(network->Ssid, result->ssid, ssidLength);
     network->Ssid[ssidLength] = '\0';
-
     memcpy(network->Bssid, result->bssid, WIFI_BSSID_LENGTH);
     network->Channel = result->channel;
     network->AuthMode = AuthModeFromCyw43(result->auth_mode);
     network->Rssi = result->rssi;
-
     target->FoundNetworks++;
     return 0;
 }
@@ -105,11 +113,10 @@ bool WiFiInitialize(void) {
     }
 
     if (cyw43_arch_init() != 0) {
-        printf("WiFi: cyw43_arch_init failed, is this board wired to a radio?\n");
+        printf("WiFi: cyw43_arch_init failed\r\n");
         return false;
     }
 
-    cyw43_arch_enable_sta_mode();
     wifiInitialized = true;
     return true;
 }
@@ -131,56 +138,110 @@ bool WiFiScan(WiFiNetwork networks[], uint16_t maxNetworks, uint16_t *foundNetwo
 
     *foundNetworks = 0;
 
-    if (!wifiInitialized) {
-        printf("WiFi: WiFiInitialize must succeed before scanning\n");
+    if (!WiFiScanStart()) {
         return false;
     }
 
-    ScanTarget target = {.Networks = networks, .MaxNetworks = maxNetworks, .FoundNetworks = 0};
-    cyw43_wifi_scan_options_t options = {0};
-
-    if (cyw43_wifi_scan(&cyw43_state, &options, &target, ScanResultReceived) != 0) {
-        printf("WiFi: cyw43_wifi_scan failed to start\n");
-        return false;
-    }
-
-    /* Synchronous by construction: nothing services the driver in poll mode, so
-     * the wait itself has to pump it. */
     absolute_time_t deadline = make_timeout_time_ms(SCAN_TIMEOUT_MS);
-    while (cyw43_wifi_scan_active(&cyw43_state)) {
+
+    while (!WiFiScanIsComplete()) {
         if (absolute_time_diff_us(get_absolute_time(), deadline) <= 0) {
             printf("WiFi: scan timed out\n");
             return false;
         }
 
-        cyw43_arch_poll();
         sleep_ms(10);
     }
 
-    *foundNetworks = target.FoundNetworks;
+    return WiFiScanGetResults(
+        networks,
+        maxNetworks,
+        foundNetworks);
+}
+
+bool WiFiScanStart(void)
+{
+    if (!wifiInitialized) {
+        printf("WiFi: WiFiInitialize must succeed before scanning\n");
+        return false;
+    }
+
+    if (scanInProgress) {
+        printf("WiFi: scan already in progress\n");
+        return false;
+    }
+
+    scanTarget.Networks = scanNetworks;
+    scanTarget.MaxNetworks = SCAN_MAX_NETWORKS;
+    scanTarget.FoundNetworks = 0;
+    cyw43_wifi_scan_options_t options = {0};
+
+    if (cyw43_wifi_scan(&cyw43_state, &options, &scanTarget, ScanResultReceived) != 0) {
+        printf("WiFi: cyw43_wifi_scan failed to start\n");
+        return false;
+    }
+
+    scanInProgress = true;
 
     return true;
 }
 
-static void StartAccessPointDhcp(void) {
-    ip4_addr_t gateway;
-    ip4_addr_t netmask;
+bool WiFiScanIsComplete(void)
+{
+    if (!scanInProgress) {
+        return true;
+    }
+
+    if (cyw43_wifi_scan_active(&cyw43_state)) {
+        return false;
+    }
+
+    scanInProgress = false;
+    return true;
+}
+
+bool WiFiScanGetResults(WiFiNetwork networks[], uint16_t maxNetworks, uint16_t *foundNetworks)
+{
+    if (networks == NULL || foundNetworks == NULL || maxNetworks == 0) {
+        return false;
+    }
+
+    if (!WiFiScanIsComplete()) {
+        return false;
+    }
+
+    uint16_t count = scanTarget.FoundNetworks;
+
+    if (count > maxNetworks) {
+        count = maxNetworks;
+    }
+
+    memcpy(networks, scanNetworks, count * sizeof(WiFiNetwork));
+    *foundNetworks = count;
+    return true;
+}
+
+static void StartAccessPointDhcp(void *context) {
+    // IP4_ADDR(&gateway, 192, 168, 33, 1);
+    // IP4_ADDR(&netmask, 255, 255, 255, 0);
     ip4addr_aton(WIFI_ACCESS_POINT_ADDRESS, &gateway);
     ip4addr_aton(ACCESS_POINT_NETMASK, &netmask);
-
     struct netif *accessPointNetif = &cyw43_state.netif[CYW43_ITF_AP];
     netif_set_addr(accessPointNetif, &gateway, &netmask, &gateway);
+    netif_set_up(accessPointNetif); // enables lwIP logical interface
+    netif_set_link_up(accessPointNetif); // tells lwIP that physical link is connected
 
-    /* lwIP carries only a DHCP client, so clients get their address from the vendored
-     * MicroPython server, handing out leases in the gateway's subnet. */
     dhcp_server_init(&dhcpServer, accessPointNetif, &gateway, &netmask);
+    dns_server_init(&dnsServer, accessPointNetif, &gateway);
+    printf("WiFi: DHCP server started at %s\r\n", WIFI_ACCESS_POINT_ADDRESS);
 }
 
 bool WiFiAccessPointStart(const char *ssid, const char *password) {
     if (ssid == NULL || ssid[0] == '\0') return false;
+    printf("WiFi: Initializing AP\r\n");
 
     if (!wifiInitialized) {
-        printf("WiFi: WiFiInitialize must succeed before starting an access point\n");
+        printf("WiFi: WiFiInitialize must succeed before starting an access point\r\n");
         return false;
     }
 
@@ -188,16 +249,25 @@ bool WiFiAccessPointStart(const char *ssid, const char *password) {
 
     uint32_t authMode = (password == NULL || password[0] == '\0') ? CYW43_AUTH_OPEN : CYW43_AUTH_WPA2_AES_PSK;
     cyw43_arch_enable_ap_mode(ssid, password, authMode);
-
-    StartAccessPointDhcp();
+    tcpip_callback(StartAccessPointDhcp, NULL);
     accessPointRunning = true;
     return true;
+}
+
+static void StopAccessPointDhcp(void *context){
+    dns_server_deinit(&dnsServer);
+    dhcp_server_deinit(&dhcpServer);
+
+    struct netif *accessPointNetif = &cyw43_state.netif[CYW43_ITF_AP];
+    netif_set_link_down(accessPointNetif);
+    netif_set_down(accessPointNetif);
+    printf("WiFi: DHCP server stopped\r\n");
 }
 
 bool WiFiAccessPointStop(void) {
     if (!accessPointRunning) return true;
 
-    dhcp_server_deinit(&dhcpServer);
+    tcpip_callback(StopAccessPointDhcp, NULL);
     cyw43_arch_disable_ap_mode();
     accessPointRunning = false;
     return true;
@@ -209,7 +279,6 @@ bool WiFiAccessPointIsRunning(void) {
 
 static bool StationHasAddress(void) {
     const struct netif *stationNetif = &cyw43_state.netif[CYW43_ITF_STA];
-
     return cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA) == CYW43_LINK_UP &&
            !ip4_addr_isany_val(*netif_ip4_addr(stationNetif));
 }
@@ -234,26 +303,21 @@ bool WiFiStationConnect(const char *ssid, const char *password) {
     if (ssid == NULL || ssid[0] == '\0') return false;
 
     if (!wifiInitialized) {
-        printf("WiFi: WiFiInitialize must succeed before connecting\n");
+        printf("WiFi: WiFiInitialize must succeed before connecting\r\n");
         return false;
     }
 
-    /* One radio, and it cannot hold both modes. */
-    if (accessPointRunning) {
-        printf("WiFi: cannot connect while the access point is running\n");
-        return false;
-    }
-
+    cyw43_arch_enable_sta_mode();
     bool open = (password == NULL || password[0] == '\0');
     uint32_t authMode = open ? CYW43_AUTH_OPEN : CYW43_AUTH_WPA2_AES_PSK;
 
     if (cyw43_arch_wifi_connect_async(ssid, open ? NULL : password, authMode) != 0) {
-        printf("WiFi: cyw43_arch_wifi_connect_async failed\n");
+        printf("WiFi: cyw43_arch_wifi_connect_async failed\r\n");
         return false;
     }
 
     if (WaitForStationAddress()) return true;
 
-    printf("WiFi: could not connect to %s\n", ssid);
+    printf("WiFi: could not connect to %s\r\n", ssid);
     return false;
 }
