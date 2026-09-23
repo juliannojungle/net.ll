@@ -168,7 +168,7 @@ bool WiFiScanStart(void)
 
     if (scanInProgress) {
         printf("WiFi: scan already in progress\n");
-        return false;
+        return true;
     }
 
     scanTarget.Networks = scanNetworks;
@@ -182,7 +182,6 @@ bool WiFiScanStart(void)
     }
 
     scanInProgress = true;
-
     return true;
 }
 
