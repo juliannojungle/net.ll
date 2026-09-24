@@ -220,9 +220,7 @@ bool WiFiScanGetResults(WiFiNetwork networks[], uint16_t maxNetworks, uint16_t *
     return true;
 }
 
-static void StartAccessPointDhcp(void *context) {
-    // IP4_ADDR(&gateway, 192, 168, 33, 1);
-    // IP4_ADDR(&netmask, 255, 255, 255, 0);
+static void StartAccessPointDhcpDns(void *context) {
     ip4addr_aton(WIFI_ACCESS_POINT_ADDRESS, &gateway);
     ip4addr_aton(ACCESS_POINT_NETMASK, &netmask);
     struct netif *accessPointNetif = &cyw43_state.netif[CYW43_ITF_AP];
@@ -248,7 +246,7 @@ bool WiFiAccessPointStart(const char *ssid, const char *password) {
 
     uint32_t authMode = (password == NULL || password[0] == '\0') ? CYW43_AUTH_OPEN : CYW43_AUTH_WPA2_AES_PSK;
     cyw43_arch_enable_ap_mode(ssid, password, authMode);
-    tcpip_callback(StartAccessPointDhcp, NULL);
+    tcpip_callback(StartAccessPointDhcpDns, NULL);
     accessPointRunning = true;
     return true;
 }

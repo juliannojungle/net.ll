@@ -41,6 +41,8 @@ typedef struct {
 static int listenSocket = -1;
 static Route routes[HTTP_SERVER_MAX_ROUTES];
 static uint16_t routeCount = 0;
+static Route defaultRoute;
+static bool useDefaultRoute = false;
 
 /* The request lives here for the duration of one poll, so the whole server's RAM
  * footprint is this buffer regardless of how many requests are served. The last
@@ -81,14 +83,18 @@ static bool WriteAll(int socketHandle, const char *data, size_t length) {
 
 static bool WriteResponse(int socketHandle, const HttpResponse *response) {
     char header[RESPONSE_HEADER_SIZE];
+    const char *customHeader = (response->CustomHeader == NULL || response->CustomHeader[0] == '\0')
+        ? "" : response->CustomHeader;
     int headerLength = snprintf(header, sizeof(header),
         "HTTP/1.1 %u %s\r\n"
         "Content-Type: %s\r\n"
         "Content-Length: %u\r\n"
         "Connection: close\r\n"
+        "%s"
         "\r\n",
         (unsigned)response->StatusCode, ReasonPhrase(response->StatusCode),
-        response->ContentType == NULL ? DEFAULT_CONTENT_TYPE : response->ContentType, (unsigned)response->BodyLength);
+        response->ContentType == NULL ? DEFAULT_CONTENT_TYPE : response->ContentType, (unsigned)response->BodyLength,
+        customHeader);
 
     if (headerLength <= 0 || (size_t)headerLength >= sizeof(header)) {
         return false;
@@ -263,7 +269,7 @@ static const Route *MatchRoute(const char *path, HttpMethod method, bool methodK
         }
     }
 
-    return NULL;
+    return useDefaultRoute ? &defaultRoute : NULL;
 }
 
 static void DispatchRoute(int socketHandle, const Route *match, HttpMethod method, const char *path, const char *query,
@@ -361,6 +367,19 @@ bool HttpServerStart(uint16_t port) {
     }
 
     listenSocket = handle;
+    return true;
+}
+
+bool HttpServerSetDefaultEndpoint(HttpMethod method, const char *path, HttpEndpointCallback callback, void *context) {
+    if (path == NULL || callback == NULL || routeCount >= HTTP_SERVER_MAX_ROUTES) {
+        return false;
+    }
+
+    defaultRoute.Method = method;
+    defaultRoute.Path = path;
+    defaultRoute.Callback = callback;
+    defaultRoute.Context = context;
+    useDefaultRoute = true;
     return true;
 }
 

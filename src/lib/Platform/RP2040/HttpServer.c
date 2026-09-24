@@ -60,6 +60,8 @@ static TaskHandle_t serverTask = NULL;
 
 static Route routes[HTTP_SERVER_MAX_ROUTES];
 static uint16_t routeCount = 0;
+static Route defaultRoute;
+static bool useDefaultRoute = false;
 
 /* -------------------------------------------------------------------------- */
 /* HTTP status                                                                 */
@@ -104,6 +106,9 @@ static bool SendBytes(int socket, const char *data, size_t length) {
 
 static bool SendResponse(int socket, const HttpResponse *response) {
     char header[RESPONSE_HEADER_SIZE];
+    const char *customHeader = (response->CustomHeader == NULL || response->CustomHeader[0] == '\0')
+        ? "" : response->CustomHeader;
+
     const char *contentType = response->ContentType != NULL ? response->ContentType : DEFAULT_CONTENT_TYPE;
     unsigned bodyLength = (unsigned)response->BodyLength;
     int headerLength = snprintf(header, sizeof(header),
@@ -111,8 +116,9 @@ static bool SendResponse(int socket, const HttpResponse *response) {
         "Content-Type: %s\r\n"
         "Content-Length: %u\r\n"
         "Connection: close\r\n"
+        "%s"
         "\r\n",
-        (unsigned)response->StatusCode, ReasonPhrase(response->StatusCode), contentType, bodyLength);
+        (unsigned)response->StatusCode, ReasonPhrase(response->StatusCode), contentType, bodyLength, customHeader);
 
     if (headerLength <= 0 || (size_t)headerLength >= sizeof(header)) {
         return false;
@@ -273,7 +279,7 @@ static const Route *MatchRoute(const char *path, HttpMethod method, bool methodK
         }
     }
 
-    return NULL;
+    return useDefaultRoute ? &defaultRoute : NULL;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -483,8 +489,20 @@ bool HttpServerStart(uint16_t port) {
     return true;
 }
 
-bool HttpServerRegisterEndpoint(HttpMethod method, const char *path, HttpEndpointCallback callback, void *context) {
+bool HttpServerSetDefaultEndpoint(HttpMethod method, const char *path, HttpEndpointCallback callback, void *context) {
+    if (path == NULL || callback == NULL || routeCount >= HTTP_SERVER_MAX_ROUTES) {
+        return false;
+    }
 
+    defaultRoute.Method = method;
+    defaultRoute.Path = path;
+    defaultRoute.Callback = callback;
+    defaultRoute.Context = context;
+    useDefaultRoute = true;
+    return true;
+}
+
+bool HttpServerRegisterEndpoint(HttpMethod method, const char *path, HttpEndpointCallback callback, void *context) {
     if (path == NULL || callback == NULL || routeCount >= HTTP_SERVER_MAX_ROUTES) {
         return false;
     }

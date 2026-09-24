@@ -54,6 +54,7 @@ typedef struct {
 typedef struct {
     uint16_t StatusCode;
     const char *ContentType;
+    const char *CustomHeader;
     const char *Body;
     uint32_t BodyLength;
 } HttpResponse;
@@ -64,8 +65,8 @@ bool HttpServerStart(uint16_t port);
 
 /* context is carried through to the callback untouched, so a consumer reaches its
  * own state without this library knowing anything about it. */
-bool HttpServerRegisterEndpoint(HttpMethod method, const char *path,
-                                HttpEndpointCallback callback, void *context);
+bool HttpServerSetDefaultEndpoint(HttpMethod method, const char *path, HttpEndpointCallback callback, void *context);
+bool HttpServerRegisterEndpoint(HttpMethod method, const char *path, HttpEndpointCallback callback, void *context);
 
 /*
  * Waits up to timeoutMilliseconds for one connection and, when one arrives, reads
