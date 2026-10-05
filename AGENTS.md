@@ -94,6 +94,32 @@ Supported platforms: `Simulator` (Linux desktop, and Windows via WSL), `RP2040` 
 It was split out of pedal.guru, where the HTTP client used to live under `src/Platform`. That is wave 4
 of the five-wave migration whose plan and state live in pedal.guru's `AGENTS.md` §17.
 
+## 1b. Current RP2040 architecture (supersedes the poll-mode description below)
+
+**Read this before §4-§5 and §9-§10.** Those sections still describe an earlier design and are kept for
+history, but the RP2040 now runs a different model, validated on hardware. Where they conflict, this
+section wins. The code is the source of truth.
+
+- **FreeRTOS, not bare poll.** The RP2040 links **`pico_cyw43_arch_lwip_sys_freertos`** (not
+  `pico_cyw43_arch_lwip_poll`) and runs lwIP in **`NO_SYS=0`** with the BSD **socket** API. lwIP owns its
+  `tcpip_thread` and the cyw43 driver its own service task, both created by the SDK. net.ll's own code
+  starts no thread of its own except the HTTP server task (below). `lwipopts.h` is a `NO_SYS=0`
+  configuration (sockets, `TCP_MSS 1460`, `TCPIP_THREAD_STACKSIZE 1536`, DHCP client).
+- **FreeRTOS runs SMP, two cores** (`configNUMBER_OF_CORES = 2`, in hal.ll's `FreeRTOSConfig.h`). The
+  cyw43/lwIP stack depends on this arrangement; forcing single core was tried and broke provisioning, so
+  do not set it to 1.
+- **The HTTP server (`HttpServer.{c,h}`)** is a synchronous, socket-based server added for provisioning.
+  `HttpServerStart` creates one `HttpServer` task that `accept`s connections and **serves each one inline,
+  on that same task** — it does **not** spawn a task per connection. That matters: an earlier version did
+  `xTaskCreate` per accepted connection, and the per-request stack+TCB churn (reclaimed only later by the
+  idle task) exhausted the FreeRTOS heap under the burst of connections a browser opens, hanging the
+  device. One reused `static ConnectionContext` (2 KB request buffer) holds the request; connections are
+  served one at a time. `HttpServerPoll` is a no-op kept for API compatibility.
+- **Wi-Fi scan is asynchronous.** `WiFiScan` (blocking) still exists but provisioning does not use it.
+  The provisioning UI drives `WiFiScanStart` -> `WiFiScanIsComplete` (polled from the browser via
+  `/network/scan/status`) -> `WiFiScanGetResults`, so the scan never blocks the server task.
+- **The download** on the RP2040 still uses lwIP's HTTP client, now under this threaded stack.
+
 ## 2. Repository layout
 
 ```
@@ -108,7 +134,7 @@ src/lib/Platform/<Platform>/        one folder per platform, same file names in 
     WiFi.c                            bring-up and scan
     HttpClient.c                      the download
     CMakeLists.txt                    ESP32 only: ESP-IDF component registration
-    lwipopts.h                        RP2040 only: lwIP config for pico_cyw43_arch_lwip_poll
+    lwipopts.h                        RP2040 only: lwIP config, NO_SYS=0 for pico_cyw43_arch_lwip_sys_freertos (see 1b)
     dhcpserver.{c,h}                  RP2040 only: vendored MIT DHCP server for the access point
 src/Dependency/fs.ll.cmake          fs.ll's build contract, copied here
 src/Dependency/fs.ll/               resolved through FS_LL_PATH — NOT a submodule, git-ignored
@@ -159,6 +185,10 @@ The name lost the underscore it carried in pedal.guru (`HttpClient_DownloadFile`
 dev cleared that up. Parameters and behaviour are otherwise unchanged.
 
 ### Every operation is synchronous, and net.ll starts no thread
+
+> **Partly superseded, see §1b.** This held for the scan/download API. The HTTP server added later
+> *does* run on a FreeRTOS task (`HttpServer`), created by `HttpServerStart`, so net.ll is no longer
+> literally thread-free on the RP2040. The scan and download calls below are still synchronous.
 
 **A hard rule from the dev.** Every call returns only once the work is done. net.ll creates no thread on
 any platform.
@@ -258,6 +288,10 @@ its own. Verified in the pico-sdk:
   `cyw43_arch_enable_sta_mode()`, and lwIP on top when TCP/IP is wanted.
 
 ### Poll mode, with lwIP on
+
+> **Superseded, see §1b.** This whole subsection describes the earlier `pico_cyw43_arch_lwip_poll` /
+> `NO_SYS=1` design. The RP2040 now links `pico_cyw43_arch_lwip_sys_freertos` with `NO_SYS=0` and the
+> socket API. Kept below for the history of why lwIP is on and how the AP/DHCP were brought up.
 
 The driver has to be *serviced* for its callbacks to fire, and the SDK offers two ways.
 `PICO_CYW43_ARCH_THREADSAFE_BACKGROUND` services the chip from an interrupt behind the caller's back —

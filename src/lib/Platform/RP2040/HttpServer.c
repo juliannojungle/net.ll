@@ -337,9 +337,8 @@ static bool DispatchRequest(ConnectionContext *connection) {
 /* Connection task                                                             */
 /* -------------------------------------------------------------------------- */
 
-static void HttpConnectionTask(void *arg) {
-    ConnectionContext *connection = (ConnectionContext *)arg;
-
+/* Serves one accepted connection to completion on the caller's task, then closes the socket. */
+static void ServeConnection(ConnectionContext *connection) {
     while (true) {
         size_t capacity = sizeof(connection->RequestBuffer) - 1;
 
@@ -381,8 +380,6 @@ static void HttpConnectionTask(void *arg) {
     }
 
     closesocket(connection->Socket);
-    vPortFree(connection);
-    vTaskDelete(NULL);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -415,25 +412,10 @@ static int CreateServerSocket(uint16_t port) {
     return socket;
 }
 
-static bool StartConnectionTask(int clientSocket) {
-    ConnectionContext *connection = pvPortMalloc(sizeof(ConnectionContext));
-
-    if (connection == NULL) {
-        closesocket(clientSocket);
-        return false;
-    }
-
-    memset(connection, 0, sizeof(ConnectionContext));
-    connection->Socket = clientSocket;
-
-    if (xTaskCreate(HttpConnectionTask, "HttpConnection", 1024, connection, 1, NULL) != pdPASS) {
-        closesocket(clientSocket);
-        vPortFree(connection);
-        return false;
-    }
-
-    return true;
-}
+/* One reused instance rather than one per connection: the server task serves
+ * connections one at a time, so there is no reentrancy, and the 2 KB request
+ * buffer stays out of the task stack and off the per-request heap path. */
+static ConnectionContext connectionContext;
 
 static void HttpServerTask(void *arg) {
     uint16_t port = (uint16_t)(uintptr_t)arg;
@@ -458,7 +440,9 @@ static void HttpServerTask(void *arg) {
             continue;
         }
 
-        StartConnectionTask(clientSocket);
+        memset(&connectionContext, 0, sizeof(connectionContext));
+        connectionContext.Socket = clientSocket;
+        ServeConnection(&connectionContext);
     }
 
     if (serverSocket >= 0) {
